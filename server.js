@@ -11,8 +11,18 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Middleware
-app.use(cors());
+// Middleware - Configure CORS to allow Shopify store
+app.use(cors({
+  origin: [
+    'https://kx9qdv-7b.myshopify.com',
+    'https://ksa.thehairaddict.net',
+    /\.myshopify\.com$/,
+    /\.thehairaddict\.net$/
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
+}));
 app.use(express.json());
 
 // Shopify API Configuration
