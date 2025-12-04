@@ -145,14 +145,39 @@ async function fetchOrderTransactions(orderId) {
 }
 
 /**
- * Enrich order data with transaction details
+ * Enrich order data with transaction details and normalized customer info
  */
 async function enrichOrderWithTransactions(order) {
   try {
     const transactions = await fetchOrderTransactions(order.id);
     
+    // Normalize customer data - handle guest checkouts
+    const customerInfo = {
+      id: order.customer?.id || null,
+      email: order.customer?.email || order.email || order.contact_email || null,
+      first_name: order.customer?.first_name || order.shipping_address?.first_name || order.billing_address?.first_name || null,
+      last_name: order.customer?.last_name || order.shipping_address?.last_name || order.billing_address?.last_name || null,
+      phone: order.customer?.phone || order.phone || order.shipping_address?.phone || order.billing_address?.phone || null,
+      accepts_marketing: order.customer?.accepts_marketing || false,
+      full_name: null
+    };
+    
+    // Build full name
+    if (customerInfo.first_name || customerInfo.last_name) {
+      customerInfo.full_name = [customerInfo.first_name, customerInfo.last_name].filter(Boolean).join(' ');
+    }
+    
+    // Log if customer data is missing
+    if (!customerInfo.full_name && !customerInfo.email) {
+      console.log(`⚠️  Order ${order.order_number || order.id} has no customer data`);
+    }
+    
     return {
       ...order,
+      customer: order.customer || customerInfo, // Keep original if exists, else use normalized
+      customer_info: customerInfo, // Always include normalized version
+      shipping_address: order.shipping_address || null,
+      billing_address: order.billing_address || null,
       transactions: transactions.map(t => ({
         id: t.id,
         authorization: t.authorization,
@@ -269,6 +294,51 @@ app.get('/apps/order-report-proxy/health', (req, res) => {
     status: 'healthy',
     timestamp: new Date().toISOString()
   });
+});
+
+/**
+ * Debug endpoint: View raw order data for troubleshooting
+ */
+app.get('/apps/order-report-proxy/debug/order/:orderId', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    console.log(`🔍 DEBUG: Fetching raw order ${orderId}...`);
+
+    const order = await fetchOrderDetails(orderId);
+    
+    if (!order) {
+      return res.status(404).json({
+        success: false,
+        error: 'Order not found'
+      });
+    }
+
+    // Return raw order data with highlighted customer fields
+    res.json({
+      success: true,
+      debug_info: {
+        has_customer: !!order.customer,
+        has_shipping_address: !!order.shipping_address,
+        has_billing_address: !!order.billing_address,
+        customer_fields: {
+          customer_object: order.customer,
+          email: order.email,
+          contact_email: order.contact_email,
+          phone: order.phone
+        },
+        shipping_address: order.shipping_address,
+        billing_address: order.billing_address
+      },
+      raw_order: order
+    });
+  } catch (error) {
+    console.error(`❌ DEBUG Error:`, error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch order',
+      message: error.message
+    });
+  }
 });
 
 /**
