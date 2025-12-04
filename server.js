@@ -103,20 +103,33 @@ async function fetchCustomerDataFromSheets() {
     }
 
     // Parse headers and data
-    const headers = rows[0].map(h => h.toLowerCase().trim());
+    const headers = rows[0].map(h => (h || '').toLowerCase().trim().replace(/"/g, ''));
     const customerData = {};
 
-    // Find column indexes
-    const orderIdIndex = headers.findIndex(h => h.includes('order') && (h.includes('id') || h.includes('number') || h.includes('name')));
-    const firstNameIndex = headers.findIndex(h => h.includes('first') && h.includes('name'));
-    const lastNameIndex = headers.findIndex(h => h.includes('last') && h.includes('name'));
+    console.log(`📋 Sheet headers: ${headers.join(' | ')}`);
+    console.log(`📊 Total rows: ${rows.length}`);
+
+    // Find column indexes (flexible matching)
+    const orderIdIndex = headers.findIndex(h => 
+      h.includes('id') || h.includes('number') || h.includes('name')
+    );
+    const firstNameIndex = headers.findIndex(h => 
+      (h.includes('first') && h.includes('name')) || h === 'first name' || h.includes('shipping') && h.includes('first')
+    );
+    const lastNameIndex = headers.findIndex(h => 
+      (h.includes('last') && h.includes('name')) || h === 'last name' || h.includes('shipping') && h.includes('last')
+    );
     const emailIndex = headers.findIndex(h => h.includes('email'));
     const phoneIndex = headers.findIndex(h => h.includes('phone'));
-    const addressIndex = headers.findIndex(h => h.includes('address') && h.includes('1'));
+    const addressIndex = headers.findIndex(h => 
+      (h.includes('address') || h.includes('street')) && !h.includes('2')
+    );
     const cityIndex = headers.findIndex(h => h.includes('city'));
     const provinceIndex = headers.findIndex(h => h.includes('province') || h.includes('state'));
     const zipIndex = headers.findIndex(h => h.includes('zip') || h.includes('postal'));
     const countryIndex = headers.findIndex(h => h.includes('country'));
+
+    console.log(`🔍 Column indexes - Order: ${orderIdIndex}, Name: ${firstNameIndex}/${lastNameIndex}, Email: ${emailIndex}`);
 
     // Process each row
     for (let i = 1; i < rows.length; i++) {
