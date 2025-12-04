@@ -280,15 +280,12 @@ async function fetchOrderTransactions(orderId) {
 }
 
 /**
- * Enrich order data with transaction details and normalized customer info
+ * Enrich order with customer data from Google Sheets (fast, no API calls)
  */
-async function enrichOrderWithTransactions(order) {
-  try {
-    const transactions = await fetchOrderTransactions(order.id);
-    
-    // Try to get customer data from Google Sheets cache first
-    const orderNumber = order.order_number?.toString() || order.number?.toString();
-    const sheetsData = customerDataCache[orderNumber];
+function enrichOrderWithCustomerData(order) {
+  // Try to get customer data from Google Sheets cache first
+  const orderNumber = order.order_number?.toString() || order.number?.toString();
+  const sheetsData = customerDataCache[orderNumber];
     
     // Merge data: Google Sheets > Shopify API > fallbacks
     const customerInfo = {
@@ -323,19 +320,28 @@ async function enrichOrderWithTransactions(order) {
       company: order.shipping_address?.company || null
     };
     
-    // Log if customer data is missing
-    if (!customerInfo.full_name && !customerInfo.email) {
-      console.log(`⚠️  Order ${order.order_number || order.id} has no customer data (Sheets or API)`);
-    } else if (sheetsData) {
-      console.log(`✅ Using Google Sheets data for order ${order.order_number}`);
-    }
+  return {
+    ...order,
+    customer: order.customer || customerInfo,
+    customer_info: customerInfo,
+    shipping_address: shippingAddress,
+    billing_address: order.billing_address || null
+  };
+}
+
+/**
+ * Enrich order data with transaction details and customer info
+ */
+async function enrichOrderWithTransactions(order) {
+  try {
+    // First enrich with customer data from Sheets
+    const enrichedOrder = enrichOrderWithCustomerData(order);
+    
+    // Then add transactions
+    const transactions = await fetchOrderTransactions(enrichedOrder.id);
     
     return {
-      ...order,
-      customer: order.customer || customerInfo, // Keep original if exists, else use merged
-      customer_info: customerInfo, // Always include normalized version with Sheets data
-      shipping_address: shippingAddress, // Merged shipping address
-      billing_address: order.billing_address || null,
+      ...enrichedOrder,
       transactions: transactions.map(t => ({
         id: t.id,
         authorization: t.authorization,
@@ -382,10 +388,13 @@ app.get('/apps/order-report-proxy/orders', async (req, res) => {
 
     console.log(`✅ Found ${orders.length} orders`);
 
-    let enrichedOrders = orders;
+    // Always enrich with customer data from Google Sheets (fast)
+    console.log('👥 Enriching orders with customer data from Google Sheets...');
+    let enrichedOrders = orders.map(order => enrichOrderWithCustomerData(order));
     
     // Only enrich with transactions if requested (this is slow due to rate limits)
     if (include_transactions === 'true') {
+      enrichedOrders = [];
       console.log('🔄 Enriching orders with transaction details (batch processing)...');
       enrichedOrders = [];
       
