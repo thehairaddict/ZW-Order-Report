@@ -209,7 +209,8 @@ app.get('/apps/order-report-proxy/orders', async (req, res) => {
       status,
       financial_status,
       created_at_min,
-      created_at_max
+      created_at_max,
+      include_transactions = 'true' // Optional: set to 'false' to skip transaction enrichment
     } = req.query;
 
     // Fetch orders
@@ -223,19 +224,30 @@ app.get('/apps/order-report-proxy/orders', async (req, res) => {
 
     console.log(`✅ Found ${orders.length} orders`);
 
-    // Enrich orders with transaction details sequentially to avoid rate limits
-    console.log('🔄 Enriching orders with transaction details...');
-    const enrichedOrders = [];
-    for (let i = 0; i < orders.length; i++) {
-      const enrichedOrder = await enrichOrderWithTransactions(orders[i]);
-      enrichedOrders.push(enrichedOrder);
+    let enrichedOrders = orders;
+    
+    // Only enrich with transactions if requested (this is slow due to rate limits)
+    if (include_transactions === 'true') {
+      console.log('🔄 Enriching orders with transaction details (batch processing)...');
+      enrichedOrders = [];
       
-      // Add delay between requests to respect rate limits (500ms between each)
-      if (i < orders.length - 1) {
-        await sleep(500);
+      // Process in batches of 5 to balance speed and rate limits
+      const batchSize = 5;
+      for (let i = 0; i < orders.length; i += batchSize) {
+        const batch = orders.slice(i, i + batchSize);
+        const batchPromises = batch.map(order => enrichOrderWithTransactions(order));
+        const batchResults = await Promise.all(batchPromises);
+        enrichedOrders.push(...batchResults);
+        
+        // Small delay between batches (100ms)
+        if (i + batchSize < orders.length) {
+          await sleep(100);
+        }
       }
+      console.log('✅ All orders enriched successfully');
+    } else {
+      console.log('⚡ Skipping transaction enrichment for faster response');
     }
-    console.log('✅ All orders enriched successfully');
 
     res.json({
       success: true,
