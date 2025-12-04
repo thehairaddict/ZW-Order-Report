@@ -7,6 +7,7 @@
 const express = require('express');
 const axios = require('axios');
 const cors = require('cors');
+const { google } = require('googleapis');
 require('dotenv').config();
 
 const app = express();
@@ -30,16 +31,108 @@ app.use(express.json());
 const SHOPIFY_STORE = process.env.SHOPIFY_STORE_DOMAIN; // e.g., 'your-store.myshopify.com'
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN; // Admin API access token
 
+// Google Sheets Configuration
+const GOOGLE_SHEETS_ID = process.env.GOOGLE_SHEETS_ID;
+const GOOGLE_SHEETS_API_KEY = process.env.GOOGLE_SHEETS_API_KEY;
+
 // Verify required environment variables
 if (!SHOPIFY_STORE || !SHOPIFY_ACCESS_TOKEN) {
   console.error('❌ Missing required environment variables: SHOPIFY_STORE_DOMAIN and SHOPIFY_ACCESS_TOKEN');
   process.exit(1);
 }
 
+// Customer data cache from Google Sheets
+let customerDataCache = {};
+let lastCacheUpdate = null;
+
 /**
  * Utility: Sleep for specified milliseconds
  */
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Fetch customer data from Google Sheets
+ */
+async function fetchCustomerDataFromSheets() {
+  if (!GOOGLE_SHEETS_ID || !GOOGLE_SHEETS_API_KEY) {
+    console.log('⚠️  Google Sheets not configured, skipping customer data sync');
+    return {};
+  }
+
+  try {
+    console.log('📊 Fetching customer data from Google Sheets...');
+    const sheets = google.sheets({ version: 'v4', auth: GOOGLE_SHEETS_API_KEY });
+    
+    const response = await sheets.spreadsheets.values.get({
+      spreadsheetId: GOOGLE_SHEETS_ID,
+      range: 'Sheet1!A:Z', // Adjust range as needed
+    });
+
+    const rows = response.data.values;
+    if (!rows || rows.length === 0) {
+      console.log('⚠️  No data found in Google Sheets');
+      return {};
+    }
+
+    // Parse headers and data
+    const headers = rows[0].map(h => h.toLowerCase().trim());
+    const customerData = {};
+
+    // Find column indexes
+    const orderIdIndex = headers.findIndex(h => h.includes('order') && (h.includes('id') || h.includes('number') || h.includes('name')));
+    const firstNameIndex = headers.findIndex(h => h.includes('first') && h.includes('name'));
+    const lastNameIndex = headers.findIndex(h => h.includes('last') && h.includes('name'));
+    const emailIndex = headers.findIndex(h => h.includes('email'));
+    const phoneIndex = headers.findIndex(h => h.includes('phone'));
+    const addressIndex = headers.findIndex(h => h.includes('address') && h.includes('1'));
+    const cityIndex = headers.findIndex(h => h.includes('city'));
+    const provinceIndex = headers.findIndex(h => h.includes('province') || h.includes('state'));
+    const zipIndex = headers.findIndex(h => h.includes('zip') || h.includes('postal'));
+    const countryIndex = headers.findIndex(h => h.includes('country'));
+
+    // Process each row
+    for (let i = 1; i < rows.length; i++) {
+      const row = rows[i];
+      if (!row || row.length === 0) continue;
+
+      const orderIdentifier = row[orderIdIndex]?.trim();
+      if (!orderIdentifier) continue;
+
+      // Extract order number from various formats (#1033, 1033, etc.)
+      const orderNum = orderIdentifier.replace(/[^0-9]/g, '');
+      
+      customerData[orderNum] = {
+        first_name: row[firstNameIndex] || null,
+        last_name: row[lastNameIndex] || null,
+        email: row[emailIndex] || null,
+        phone: row[phoneIndex] || null,
+        address1: row[addressIndex] || null,
+        city: row[cityIndex] || null,
+        province: row[provinceIndex] || null,
+        zip: row[zipIndex] || null,
+        country: row[countryIndex] || null
+      };
+    }
+
+    console.log(`✅ Loaded customer data for ${Object.keys(customerData).length} orders from Google Sheets`);
+    return customerData;
+  } catch (error) {
+    console.error('❌ Error fetching from Google Sheets:', error.message);
+    return {};
+  }
+}
+
+/**
+ * Refresh customer data cache from Google Sheets
+ */
+async function refreshCustomerDataCache() {
+  customerDataCache = await fetchCustomerDataFromSheets();
+  lastCacheUpdate = new Date();
+  return customerDataCache;
+}
+
+// Initialize cache on startup
+refreshCustomerDataCache().catch(err => console.error('Failed to initialize customer data cache:', err));
 
 /**
  * Utility: Retry function with exponential backoff
@@ -152,13 +245,17 @@ async function enrichOrderWithTransactions(order) {
   try {
     const transactions = await fetchOrderTransactions(order.id);
     
-    // Normalize customer data - handle guest checkouts
+    // Try to get customer data from Google Sheets cache first
+    const orderNumber = order.order_number?.toString() || order.number?.toString();
+    const sheetsData = customerDataCache[orderNumber];
+    
+    // Merge data: Google Sheets > Shopify API > fallbacks
     const customerInfo = {
       id: order.customer?.id || null,
-      email: order.customer?.email || order.email || order.contact_email || null,
-      first_name: order.customer?.first_name || order.shipping_address?.first_name || order.billing_address?.first_name || null,
-      last_name: order.customer?.last_name || order.shipping_address?.last_name || order.billing_address?.last_name || null,
-      phone: order.customer?.phone || order.phone || order.shipping_address?.phone || order.billing_address?.phone || null,
+      email: sheetsData?.email || order.customer?.email || order.email || order.contact_email || null,
+      first_name: sheetsData?.first_name || order.customer?.first_name || order.shipping_address?.first_name || order.billing_address?.first_name || null,
+      last_name: sheetsData?.last_name || order.customer?.last_name || order.shipping_address?.last_name || order.billing_address?.last_name || null,
+      phone: sheetsData?.phone || order.customer?.phone || order.phone || order.shipping_address?.phone || order.billing_address?.phone || null,
       accepts_marketing: order.customer?.accepts_marketing || false,
       full_name: null
     };
@@ -168,16 +265,35 @@ async function enrichOrderWithTransactions(order) {
       customerInfo.full_name = [customerInfo.first_name, customerInfo.last_name].filter(Boolean).join(' ');
     }
     
+    // Merge shipping address with Google Sheets data
+    const shippingAddress = {
+      first_name: sheetsData?.first_name || order.shipping_address?.first_name || customerInfo.first_name,
+      last_name: sheetsData?.last_name || order.shipping_address?.last_name || customerInfo.last_name,
+      name: sheetsData?.first_name || sheetsData?.last_name ? `${sheetsData.first_name || ''} ${sheetsData.last_name || ''}`.trim() : order.shipping_address?.name,
+      address1: sheetsData?.address1 || order.shipping_address?.address1 || null,
+      address2: order.shipping_address?.address2 || null,
+      city: sheetsData?.city || order.shipping_address?.city || null,
+      province: sheetsData?.province || order.shipping_address?.province || null,
+      province_code: order.shipping_address?.province_code || null,
+      zip: sheetsData?.zip || order.shipping_address?.zip || null,
+      country: sheetsData?.country || order.shipping_address?.country || null,
+      country_code: order.shipping_address?.country_code || null,
+      phone: sheetsData?.phone || order.shipping_address?.phone || customerInfo.phone,
+      company: order.shipping_address?.company || null
+    };
+    
     // Log if customer data is missing
     if (!customerInfo.full_name && !customerInfo.email) {
-      console.log(`⚠️  Order ${order.order_number || order.id} has no customer data`);
+      console.log(`⚠️  Order ${order.order_number || order.id} has no customer data (Sheets or API)`);
+    } else if (sheetsData) {
+      console.log(`✅ Using Google Sheets data for order ${order.order_number}`);
     }
     
     return {
       ...order,
-      customer: order.customer || customerInfo, // Keep original if exists, else use normalized
-      customer_info: customerInfo, // Always include normalized version
-      shipping_address: order.shipping_address || null,
+      customer: order.customer || customerInfo, // Keep original if exists, else use merged
+      customer_info: customerInfo, // Always include normalized version with Sheets data
+      shipping_address: shippingAddress, // Merged shipping address
       billing_address: order.billing_address || null,
       transactions: transactions.map(t => ({
         id: t.id,
@@ -305,8 +421,36 @@ app.get('/apps/order-report-proxy/health', (req, res) => {
   res.json({
     success: true,
     status: 'healthy',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    cache_status: {
+      has_customer_data: Object.keys(customerDataCache).length > 0,
+      customer_count: Object.keys(customerDataCache).length,
+      last_update: lastCacheUpdate
+    }
   });
+});
+
+/**
+ * Refresh Google Sheets customer data cache
+ */
+app.post('/apps/order-report-proxy/refresh-customer-data', async (req, res) => {
+  try {
+    console.log('🔄 Manual refresh of customer data requested...');
+    await refreshCustomerDataCache();
+    res.json({
+      success: true,
+      message: 'Customer data cache refreshed successfully',
+      customer_count: Object.keys(customerDataCache).length,
+      last_update: lastCacheUpdate
+    });
+  } catch (error) {
+    console.error('❌ Error refreshing customer data:', error.message);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to refresh customer data',
+      message: error.message
+    });
+  }
 });
 
 /**
