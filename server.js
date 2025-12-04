@@ -1,6 +1,7 @@
 /**
  * Shopify App Proxy Server for Order Report
  * This server fetches order data including payment method and Stripe transaction details
+ * Version: 1.1.0 - With shipping scope support
  */
 
 const express = require('express');
