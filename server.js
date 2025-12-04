@@ -64,7 +64,10 @@ async function fetchCustomerDataFromSheets() {
     
     // Use public CSV export URL (works for public sheets without API key)
     const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/export?format=csv`;
-    const response = await axios.get(csvUrl);
+    const response = await axios.get(csvUrl, {
+      maxRedirects: 5,
+      validateStatus: (status) => status < 400
+    });
     
     if (!response.data) {
       console.log('⚠️  No data found in Google Sheets');
