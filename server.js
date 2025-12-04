@@ -51,25 +51,50 @@ let lastCacheUpdate = null;
 const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Fetch customer data from Google Sheets
+ * Fetch customer data from Google Sheets (public sheet via CSV export)
  */
 async function fetchCustomerDataFromSheets() {
-  if (!GOOGLE_SHEETS_ID || !GOOGLE_SHEETS_API_KEY) {
+  if (!GOOGLE_SHEETS_ID) {
     console.log('⚠️  Google Sheets not configured, skipping customer data sync');
     return {};
   }
 
   try {
     console.log('📊 Fetching customer data from Google Sheets...');
-    const sheets = google.sheets({ version: 'v4', auth: GOOGLE_SHEETS_API_KEY });
     
-    const response = await sheets.spreadsheets.values.get({
-      spreadsheetId: GOOGLE_SHEETS_ID,
-      range: 'Sheet1!A:Z', // Adjust range as needed
+    // Use public CSV export URL (works for public sheets without API key)
+    const csvUrl = `https://docs.google.com/spreadsheets/d/${GOOGLE_SHEETS_ID}/export?format=csv`;
+    const response = await axios.get(csvUrl);
+    
+    if (!response.data) {
+      console.log('⚠️  No data found in Google Sheets');
+      return {};
+    }
+
+    // Parse CSV data
+    const lines = response.data.split('\n');
+    const rows = lines.map(line => {
+      // Simple CSV parser (handles quoted fields)
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        if (char === '"') {
+          inQuotes = !inQuotes;
+        } else if (char === ',' && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current);
+      return result;
     });
 
-    const rows = response.data.values;
-    if (!rows || rows.length === 0) {
+    if (rows.length === 0) {
       console.log('⚠️  No data found in Google Sheets');
       return {};
     }
