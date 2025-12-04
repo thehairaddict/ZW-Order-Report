@@ -48,11 +48,10 @@ async function fetchShopifyOrders(params = {}) {
       created_at_max
     } = params;
 
-    // Build query parameters - include fields to ensure customer and address data is returned
+    // Build query parameters - omit fields to get complete order data including customer
     const queryParams = new URLSearchParams({
       limit: limit.toString(),
       status,
-      fields: 'id,order_number,name,created_at,currency,total_price,subtotal_price,total_discounts,current_subtotal_price,current_total_price,financial_status,fulfillment_status,payment_gateway_names,customer,email,contact_email,phone,browser_ip,shipping_address,billing_address,line_items,shipping_lines,note,tags',
       ...(financial_status && { financial_status }),
       ...(created_at_min && { created_at_min }),
       ...(created_at_max && { created_at_max })
