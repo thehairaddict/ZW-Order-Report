@@ -36,6 +36,30 @@ if (!SHOPIFY_STORE || !SHOPIFY_ACCESS_TOKEN) {
 }
 
 /**
+ * Utility: Sleep for specified milliseconds
+ */
+const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+/**
+ * Utility: Retry function with exponential backoff
+ */
+async function retryWithBackoff(fn, maxRetries = 3, initialDelay = 1000) {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      if (error.response?.status === 429 && i < maxRetries - 1) {
+        const delay = initialDelay * Math.pow(2, i);
+        console.log(`⏳ Rate limited. Retrying in ${delay}ms... (Attempt ${i + 1}/${maxRetries})`);
+        await sleep(delay);
+      } else {
+        throw error;
+      }
+    }
+  }
+}
+
+/**
  * Fetch orders from Shopify with payment details
  */
 async function fetchShopifyOrders(params = {}) {
@@ -98,23 +122,24 @@ async function fetchOrderDetails(orderId) {
 }
 
 /**
- * Fetch transactions for an order
+ * Fetch transactions for an order with retry logic
  */
 async function fetchOrderTransactions(orderId) {
   try {
-    const response = await axios.get(
-      `https://${SHOPIFY_STORE}/admin/api/2024-01/orders/${orderId}/transactions.json`,
-      {
-        headers: {
-          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
-          'Content-Type': 'application/json'
+    return await retryWithBackoff(async () => {
+      const response = await axios.get(
+        `https://${SHOPIFY_STORE}/admin/api/2024-01/orders/${orderId}/transactions.json`,
+        {
+          headers: {
+            'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+            'Content-Type': 'application/json'
+          }
         }
-      }
-    );
-
-    return response.data.transactions;
+      );
+      return response.data.transactions;
+    });
   } catch (error) {
-    console.error(`Error fetching transactions for order ${orderId}:`, error.message);
+    console.error(`❌ Error fetching transactions for order ${orderId}:`, error.response?.status || error.message);
     return [];
   }
 }
@@ -173,10 +198,19 @@ app.get('/apps/order-report-proxy/orders', async (req, res) => {
 
     console.log(`✅ Found ${orders.length} orders`);
 
-    // Enrich orders with transaction details
-    const enrichedOrders = await Promise.all(
-      orders.map(order => enrichOrderWithTransactions(order))
-    );
+    // Enrich orders with transaction details sequentially to avoid rate limits
+    console.log('🔄 Enriching orders with transaction details...');
+    const enrichedOrders = [];
+    for (let i = 0; i < orders.length; i++) {
+      const enrichedOrder = await enrichOrderWithTransactions(orders[i]);
+      enrichedOrders.push(enrichedOrder);
+      
+      // Add delay between requests to respect rate limits (500ms between each)
+      if (i < orders.length - 1) {
+        await sleep(500);
+      }
+    }
+    console.log('✅ All orders enriched successfully');
 
     res.json({
       success: true,
