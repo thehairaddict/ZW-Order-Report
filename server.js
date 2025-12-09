@@ -330,9 +330,19 @@ function enrichOrderWithCustomerData(order) {
 }
 
 /**
- * Fetch variant details to get SKU and barcode
+ * Sleep helper for rate limiting
  */
-async function fetchVariantDetails(variantId) {
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * Fetch variant details to get SKU and barcode with retry logic
+ */
+async function fetchVariantDetails(variantId, retryCount = 0) {
+  const maxRetries = 3;
+  const baseDelay = 500; // Start with 500ms delay
+  
   try {
     const response = await axios.get(
       `https://${SHOPIFY_STORE}/admin/api/2024-01/variants/${variantId}.json`,
@@ -345,7 +355,18 @@ async function fetchVariantDetails(variantId) {
     );
     return response.data.variant;
   } catch (error) {
-    console.error(`Error fetching variant ${variantId}:`, error.message);
+    // Handle rate limiting (429) with exponential backoff
+    if (error.response?.status === 429 && retryCount < maxRetries) {
+      const retryAfter = error.response.headers['retry-after'] 
+        ? parseInt(error.response.headers['retry-after']) * 1000 
+        : baseDelay * Math.pow(2, retryCount);
+      
+      console.log(`⚠️ Rate limited. Retrying variant ${variantId} in ${retryAfter}ms... (attempt ${retryCount + 1}/${maxRetries})`);
+      await sleep(retryAfter);
+      return fetchVariantDetails(variantId, retryCount + 1);
+    }
+    
+    console.error(`❌ Error fetching variant ${variantId}:`, error.response?.status || error.message);
     return null;
   }
 }
@@ -380,6 +401,9 @@ async function enrichLineItemsWithSKU(lineItems) {
         console.log(`❌ Failed to fetch variant details for "${item.name}"`);
         enrichedItems.push(item);
       }
+      
+      // Add small delay between requests to avoid rate limiting
+      await sleep(200);
     } else {
       console.log(`⚠️ Item "${item.name}" has no variant_id`);
       enrichedItems.push(item);
