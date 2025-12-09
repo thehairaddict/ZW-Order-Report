@@ -330,13 +330,6 @@ function enrichOrderWithCustomerData(order) {
 }
 
 /**
- * Sleep helper for rate limiting
- */
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-/**
  * Fetch variant details to get SKU and barcode with retry logic
  */
 async function fetchVariantDetails(variantId, retryCount = 0) {
