@@ -330,12 +330,71 @@ function enrichOrderWithCustomerData(order) {
 }
 
 /**
+ * Fetch variant details to get SKU and barcode
+ */
+async function fetchVariantDetails(variantId) {
+  try {
+    const response = await axios.get(
+      `https://${SHOPIFY_STORE}/admin/api/2024-01/variants/${variantId}.json`,
+      {
+        headers: {
+          'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
+          'Content-Type': 'application/json'
+        }
+      }
+    );
+    return response.data.variant;
+  } catch (error) {
+    console.error(`Error fetching variant ${variantId}:`, error.message);
+    return null;
+  }
+}
+
+/**
+ * Enrich line items with SKU and barcode from variant data
+ */
+async function enrichLineItemsWithSKU(lineItems) {
+  const enrichedItems = [];
+  
+  for (const item of lineItems) {
+    // If item already has SKU, keep it as is
+    if (item.sku) {
+      enrichedItems.push(item);
+      continue;
+    }
+    
+    // If no SKU and has variant_id, fetch variant details
+    if (item.variant_id) {
+      const variant = await fetchVariantDetails(item.variant_id);
+      if (variant) {
+        enrichedItems.push({
+          ...item,
+          sku: variant.sku || null,
+          barcode: variant.barcode || null
+        });
+      } else {
+        enrichedItems.push(item);
+      }
+    } else {
+      enrichedItems.push(item);
+    }
+  }
+  
+  return enrichedItems;
+}
+
+/**
  * Enrich order data with transaction details and customer info
  */
 async function enrichOrderWithTransactions(order) {
   try {
     // First enrich with customer data from Sheets
     const enrichedOrder = enrichOrderWithCustomerData(order);
+    
+    // Enrich line items with SKU for bundle products
+    if (enrichedOrder.line_items && enrichedOrder.line_items.length > 0) {
+      enrichedOrder.line_items = await enrichLineItemsWithSKU(enrichedOrder.line_items);
+    }
     
     // Then add transactions
     const transactions = await fetchOrderTransactions(enrichedOrder.id);
