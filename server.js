@@ -355,31 +355,38 @@ async function fetchVariantDetails(variantId) {
  */
 async function enrichLineItemsWithSKU(lineItems) {
   const enrichedItems = [];
+  console.log(`🔍 Enriching ${lineItems.length} line items with SKU...`);
   
   for (const item of lineItems) {
     // If item already has SKU, keep it as is
     if (item.sku) {
+      console.log(`✅ Item "${item.name}" already has SKU: ${item.sku}`);
       enrichedItems.push(item);
       continue;
     }
     
     // If no SKU and has variant_id, fetch variant details
     if (item.variant_id) {
+      console.log(`🔄 Fetching SKU for "${item.name}" (variant_id: ${item.variant_id})...`);
       const variant = await fetchVariantDetails(item.variant_id);
       if (variant) {
+        console.log(`✅ Found SKU for "${item.name}": ${variant.sku}`);
         enrichedItems.push({
           ...item,
           sku: variant.sku || null,
           barcode: variant.barcode || null
         });
       } else {
+        console.log(`❌ Failed to fetch variant details for "${item.name}"`);
         enrichedItems.push(item);
       }
     } else {
+      console.log(`⚠️ Item "${item.name}" has no variant_id`);
       enrichedItems.push(item);
     }
   }
   
+  console.log(`✅ Enrichment complete: ${enrichedItems.filter(i => i.sku).length}/${lineItems.length} items have SKU`);
   return enrichedItems;
 }
 
